@@ -1,0 +1,6 @@
+[engine]
+limit = 10
+timeout_ms = 500
+
+[render]
+bullet = "-"
