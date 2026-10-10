@@ -2,7 +2,7 @@
 pub fn render(items: &[String]) -> String {
     items
         .iter()
-        .map(|item| format!("- {item}"))
+        .map(|item| format!("* {item}"))
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -22,7 +22,7 @@ pub fn blank() -> String {
     String::new()
 }
 
-/// Renders a count summary.
+/// Renders a count summary such as "3 items".
 pub fn summary(count: usize) -> String {
     format!("{count} items")
 }
