@@ -6,4 +6,5 @@ def test_fee():
 
 
 def test_total():
-    assert total([1, 2]) == 3
+    # Refunds lower the total.
+    assert total([1, -2]) == -1
