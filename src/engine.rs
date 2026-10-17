@@ -14,7 +14,10 @@ impl Engine {
         items.into_iter().take(self.limit).collect()
     }
 
+    /* The limit counts kept lines,
+       not input lines. */
     pub fn limit(&self) -> usize {
-        self.limit
+        // Zero means keep one line.
+        self.limit.max(1)
     }
 }
