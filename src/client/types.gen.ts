@@ -134,4 +134,4 @@ export type RenderLinesResponses = {
     200: string;
 };
 
-export type RenderLinesResponse = RenderLinesResponses[keyof RenderLinesResponses];
+export type RenderLinesResponse = RenderLinesResponses[200];
