@@ -63,7 +63,7 @@ export const createQuerySerializer = <T = unknown>({
 };
 
 /**
- * Infers parseAs value from provided Content-Type header.
+ * Infers the parseAs value from the Content-Type header.
  */
 export const getParseAs = (contentType: string | null): Exclude<Config['parseAs'], 'auto'> => {
   if (!contentType) {
