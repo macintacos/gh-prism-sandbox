@@ -45,24 +45,22 @@ export function buildOrderSection(
   opts: ReportOptions,
 ): Section {
   const title = "Orders";
-  const visible = rowsOf(rows, "order");
-  if (visible.length === 0) {
-    return emptySection(title);
+  const orders = rowsOf(rows, "order").filter((row) => row.status !== "void");
+  if (orders.length === 0) {
+    return emptySection(title, opts.locale);
   }
-
-  const totals = totalOf(visible);
-  const average = totals / visible.length;
-  const largest = Math.max(...visible.map((row) => row.amount));
+  const totals = totalOf(orders);
+  const average = Math.round(totals / orders.length);
+  const largest = Math.max(...orders.map((order) => order.amount));
   const summary = summarize(
-    { totals, average, largest },
-    opts.locale
+    { totals, average, largest, count: orders.length },
+    opts.locale,
   );
-  const footer = formatFooter(opts.locale, visible.length);
-
+  const footer = formatFooter(opts.locale, orders.length);
   return {
     title,
     columns: COLUMNS,
-    rows: visible.map((row) => toCells(row, COLUMNS)),
+    rows: orders.map((order) => toCells(order, COLUMNS)),
     summary,
     footer,
   };
@@ -133,18 +131,18 @@ export function buildPayoutSection(
   opts: ReportOptions,
 ): Section {
   const title = "Payouts";
-  const byPayee = new Map<string, number>();
-  for (const row of rowsOf(rows, "payout")) {
-    const before = byPayee.get(row.account) ?? 0;
-    byPayee.set(row.account, before + row.amount);
-  }
+  const byPayee = rowsOf(rows, "payout").reduce(
+    (sums, row) => sums.set(row.account, (sums.get(row.account) ?? 0) + row.amount),
+    new Map<string, number>(),
+  );
   if (byPayee.size === 0) {
     return emptySection(title);
   }
 
-  const payees = [...byPayee].map(([id, amount]) => ({ id, amount }));
-  payees.sort((a, b) => b.amount - a.amount);
-  const totals = payees.reduce((sum, payee) => sum + payee.amount, 0);
+  const payees = [...byPayee]
+    .map(([id, amount]) => ({ id, amount }))
+    .sort((a, b) => b.amount - a.amount);
+  const totals = totalOf(payees.map((payee) => ({ amount: payee.amount }) as Row));
   const columns = ["account", "amount"];
 
   return {
@@ -201,16 +199,12 @@ export function buildDisputeSection(
     return emptySection(title);
   }
 
-  const open = disputes.filter((row) => row.status === "open");
+  const open = disputes.filter((row) => row.status === "open" || row.status === "review");
   const won = disputes.filter((row) => row.status === "won");
-  const lost = disputes.filter((row) => row.status === "lost");
+  const lost = disputes.filter((row) => row.status === "lost" || row.status === "expired");
   const summary = summarize(
-    {
-      open: open.length,
-      won: won.length,
-      lost: lost.length
-    },
-    opts.locale
+    { open: open.length, won: won.length, lost: lost.length, owed: totalOf(lost) },
+    opts.locale,
   );
 
   return {
@@ -243,17 +237,20 @@ export function buildCurrencySection(
     "change",
     "previous"
   ];
+  const started = opts.clock.now();
   const cells = codes.map((code) => {
     const amount = totals.get(code) ?? 0;
-    const previous = opts.previous.get(code) ?? 0;
+    const previous = opts.previous.get(code);
+    if (previous === undefined) opts.metrics.increment("report.currency.new", { code });
     return [
       code,
       String(amount),
       percentOf(amount, all),
-      String(amount - previous),
-      String(previous),
+      String(amount - (previous ?? 0)),
+      previous === undefined ? "new" : String(previous),
     ];
   });
+  opts.metrics.timing("report.currency.cells", opts.clock.now() - started);
 
   return {
     title,

@@ -23,17 +23,22 @@ class Subscriptions
   def renew(subscriber, at: Time.now)
     return if subscriber.cancelled? || subscriber.paused?
 
-    plan = plans.fetch(subscriber.plan_id)
-    account = subscriber.account
+    plan = plans.fetch(subscriber.next_plan_id || subscriber.plan_id)
+    period, charge = charge_period(subscriber, plan)
+
+    subscriber.update!(renewed_at: at, period: period, plan_id: plan.id, next_plan_id: nil)
+    audit.count(:renewals)
+    receipts.build(subscriber, charge)
+  end
+
+  def charge_period(subscriber, plan)
     grace = GRACE_DAYS * 86_400
     period = plan.period_after(subscriber.renewed_at, grace: grace)
-    charge = billing.charge(account, plan.price, grace: grace)
+    charge = billing.charge(subscriber.account, plan.price_with(subscriber.coupon_code))
     raise BillingError, charge.error unless charge.ok?
 
-    subscriber.update!(renewed_at: at, period: period)
-    audit.count(:renewals)
     audit.gauge(:period_days, period.days)
-    receipts.build(subscriber, charge)
+    [period, charge]
   end
 
   # Starts a free trial; the first charge happens when it ends.
@@ -136,8 +141,13 @@ class Subscriptions
     unused = subscriber.period.remaining_fraction(at)
     account = subscriber.account
     amount = (plan.price * unused).round
-    refund = billing.refund(account, amount, reason: reason)
-    subscriber.update!(state: :cancelled, cancel_at: at)
+    begin
+      refund = billing.refund(account, amount, reason: reason)
+    rescue Billing::DeclinedError => e
+      audit.tag(:refund_declined, e.message)
+      raise BillingError, "refund of #{amount} declined: #{e.message}"
+    end
+    subscriber.update!(state: :cancelled, cancel_at: at, cancel_reason: reason)
     audit.count(:immediate_cancellations)
     receipts.build(subscriber, refund)
   end
@@ -215,11 +225,16 @@ class Subscriptions
   # Subscribers whose card expires before their next renewal.
   def expiring_cards(subscribers, at: Time.now)
     subscribers.select do |subscriber|
+      next false if subscriber.cancelled?
+
       card = billing.card_for(subscriber.account)
       next false if card.nil?
+      next false if card.expires_at <= at
 
       ends_at = subscriber.period.ends_at
-      card.expires_at < ends_at && card.expires_at > at
+      next false if card.expires_at >= ends_at
+
+      true
     end
   end
 
@@ -237,17 +252,15 @@ class Subscriptions
   # Reminds trial subscribers two days before their first charge.
   def remind_trials(subscribers, at: Time.now)
     soon = at + 2 * 86_400
-    reminded = 0
-    subscribers.each do |subscriber|
-      next unless subscriber.trial?
-      next if subscriber.trial_end > soon || subscriber.reminded?
-
-      notify(subscriber, :trial_ending, on: subscriber.trial_end)
-      subscriber.update!(reminded: true)
-      reminded += 1
-    end
-    audit.gauge(:trial_reminders, reminded)
-    reminded
+    reminded = subscribers
+      .select(&:trial?)
+      .reject { |subscriber| subscriber.trial_end > soon || subscriber.reminded? }
+      .each do |subscriber|
+        notify(subscriber, :trial_ending, on: subscriber.trial_end)
+        subscriber.update!(reminded: true)
+      end
+    audit.gauge(:trial_reminders, reminded.size)
+    reminded.size
   end
 
   private

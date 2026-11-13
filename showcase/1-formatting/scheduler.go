@@ -103,20 +103,19 @@ func (s *Scheduler) Schedule(
 func (s *Scheduler) Cancel(h *Handle) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if h.cancelled {
+	if s.closed || h.cancelled {
 		return false
 	}
-	key := h.Key
-	if _, ok := s.pending[key]; !ok ||
-		s.queue.Started(key) ||
-		s.closed {
+	if _, ok := s.pending[h.Key]; !ok {
 		return false
 	}
-
+	if s.queue.Started(h.Key) {
+		return false
+	}
 	h.cancelled = true
-	delete(s.pending, key)
-	s.queue.Remove(key)
-	s.metrics.Inc("scheduler.cancelled", "")
+	delete(s.pending, h.Key)
+	s.queue.Remove(h.Key)
+	s.metrics.Inc("scheduler.cancelled", h.Key)
 	return true
 }
 
@@ -145,14 +144,17 @@ func (s *Scheduler) Retry(job Job, opts Options) error {
 	}
 	if job.Attempt >= limit {
 		s.metrics.Inc("scheduler.gave_up", job.Kind)
-		return fmt.Errorf("job %s: out of retries", job.Key)
+		return fmt.Errorf("job %s: out of retries after %d attempts", job.Key, job.Attempt)
 	}
 
 	next := job
 	next.Attempt++
 	next.At = s.now().Add(Backoff(next.Attempt))
+	if err := s.queue.Remove(job.Key); err != nil {
+		return fmt.Errorf("retry %s: remove attempt %d: %w", job.Key, job.Attempt, err)
+	}
 	if err := s.queue.Push(next, opts.Tags...); err != nil {
-		return err
+		return fmt.Errorf("retry %s: push attempt %d: %w", job.Key, next.Attempt, err)
 	}
 	s.metrics.Inc("scheduler.retried", job.Kind)
 	return nil
@@ -234,18 +236,21 @@ func (s *Scheduler) Snapshot() Report {
 // Drain waits until every queued job has started, or until the
 // deadline passes. It returns the keys still waiting at the deadline.
 func (s *Scheduler) Drain(deadline time.Time) []string {
-	for s.now().Before(deadline) {
+	started := s.now()
+	for polls := 0; s.now().Before(deadline); polls++ {
 		s.mu.Lock()
 		left := len(s.pending)
 		s.mu.Unlock()
+		s.metrics.Gauge("scheduler.drain.left", float64(left))
 		if left == 0 {
+			s.metrics.Timing("scheduler.drain.took", s.now().Sub(started))
 			return nil
 		}
 		time.Sleep(time.Second)
 	}
-
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.metrics.Inc("scheduler.drain.timed_out", "")
 	keys := make([]string, 0, len(s.pending))
 	for key := range s.pending {
 		keys = append(keys, key)
@@ -274,18 +279,18 @@ func (s *Scheduler) Close() error {
 }
 
 // Nightly queues the settlement and export jobs for the given night.
-func (s *Scheduler) Nightly(night time.Time, tags []string) error {
+func (s *Scheduler) Nightly(night time.Time, plan NightlyPlan) error {
 	start := time.Date(night.Year(), night.Month(), night.Day(),
-		1, 30, 0, 0, time.UTC)
+		plan.StartHour, plan.StartMinute, 0, 0, plan.Zone)
 
-	opts := Options{Window: time.Hour, Retries: 3, Tags: tags}
-	settleKey := "settle:" + night.Format("2006-01-02")
+	opts := Options{Window: plan.Window, Retries: plan.Retries, Tags: plan.Tags}
+	settleKey := "settle:" + night.In(plan.Zone).Format("2006-01-02")
 	if _, err := s.Schedule("settle", settleKey, start, opts); err != nil {
 		return err
 	}
 
-	at := start.Add(2 * time.Hour)
-	key := "export:" + night.Format("2006-01-02")
+	at := start.Add(plan.ExportDelay)
+	key := "export:" + night.In(plan.Zone).Format("2006-01-02")
 	if _, err := s.Schedule("export", key, at, opts); err != nil {
 		return err
 	}

@@ -64,11 +64,7 @@ public sealed class InventoryClient
         {
             foreach (var batch in lines.Chunk(MaxBatch))
             {
-                var requests = batch.Select(line =>
-                    new ReserveRequest(orderId, line.Sku,
-                        line.Quantity, holdWindow));
-                held.AddRange(await api.ReserveManyAsync(requests,
-                    token));
+                held.AddRange(await ReserveBatchAsync(orderId, batch, token));
             }
         }
         catch
@@ -77,6 +73,16 @@ public sealed class InventoryClient
             throw;
         }
         return held;
+    }
+
+    private async Task<IReadOnlyList<Reservation>> ReserveBatchAsync(
+        string orderId, OrderLine[] batch, CancellationToken token)
+    {
+        var requests = batch
+            .Where(line => line.Quantity > 0)
+            .Select(line => new ReserveRequest(orderId, line.Sku,
+                line.Quantity, holdWindow));
+        return await api.ReserveManyAsync(requests.ToList(), token);
     }
 
     /// <summary>
@@ -94,19 +100,24 @@ public sealed class InventoryClient
     public async Task ReleaseAllAsync(
         IEnumerable<Reservation> reservations, CancellationToken token)
     {
+        var failed = 0;
         foreach (var reservation in reservations)
         {
             try
             {
                 await api.ReleaseAsync(reservation.Id, token);
+                metrics.Increment("inventory.released");
             }
-            catch (StockApiException)
+            catch (StockApiException ex)
             {
                 // The reservation expires on its own when its
                 // window lapses, so a failed release only holds
                 // stock a little longer than it should.
+                failed++;
+                logger.LogWarning(ex, "Release of {Reservation} failed", reservation.Id);
             }
         }
+        metrics.Gauge("inventory.release_failures", failed);
     }
 
     /// <summary>
@@ -169,16 +180,17 @@ public sealed class InventoryClient
     public async Task<IReadOnlyDictionary<string, int>> AvailableAsync(
         IEnumerable<string> skus, CancellationToken token)
     {
-        var counts = new Dictionary<string, int>();
-        foreach (var batch in skus.Chunk(MaxBatch))
-        {
-            var levels = await api.LevelsAsync(batch, token);
-            foreach (var level in levels)
-            {
-                counts[level.Sku] = level.Free; // never negative
-            }
-        }
-        return counts;
+        var batches = await Task.WhenAll(skus
+            .Distinct()
+            .Chunk(MaxBatch)
+            .Select(batch => api.LevelsAsync(batch, token)));
+        return batches
+            .SelectMany(levels => levels)
+            .Where(level => level.Warehouse != null)
+            .GroupBy(level => level.Sku)
+            .ToDictionary(
+                group => group.Key,
+                group => group.Sum(level => Math.Max(level.Free, 0)));
     }
 
     /*

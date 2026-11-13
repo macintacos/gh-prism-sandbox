@@ -50,10 +50,18 @@ class Notifications(
         }
 
         val channel = channels.urgent(user)
-        val body = templates.render("payment_failed", event.payload)
-        val subject = subjects.of("payment_failed", user.locale)
+        val body = try {
+            templates.render("payment_failed", event.payload)
+        } catch (e: TemplateException) {
+            return Delivery.failed(user.id, "payment_failed", e)
+        }
+        val subject = subjects.of("payment_failed", user.locale ?: defaultLocale)
         history.touch(user.id, "payment_failed")
-        val delivery = channel.deliver(user, subject, body)
+        val delivery = try {
+            channel.deliver(user, subject, body)
+        } catch (e: ChannelException) {
+            Delivery.failed(user.id, "payment_failed", e)
+        }
         history.recordAttempt(user.id, "payment_failed", delivery.ok)
         return delivery
     }
@@ -148,19 +156,16 @@ class Notifications(
 
     /** Sends one notice to many users, skipping any that opted out. */
     fun broadcast(users: List<User>, notice: Notice): List<Delivery> {
-        val out = mutableListOf<Delivery>()
-        for (user in users) {
-            if (!user.wants(notice.kind)) {
-                out += Delivery.skipped(user.id)
-                continue
+        val (wanting, optedOut) = users.partition { it.wants(notice.kind) }
+        val sent = wanting
+            .groupBy { it.locale ?: defaultLocale }
+            .flatMap { (locale, group) ->
+                val body = templates.render(notice.kind, notice.payload, locale)
+                val subject = subjects.of(notice.kind, locale)
+                group.map { user -> channels.preferred(user).deliver(user, subject, body) }
             }
-            val body = templates.render(notice.kind, notice.payload)
-            val subject = subjects.of(notice.kind, user.locale)
-            val channel = channels.preferred(user)
-            out += channel.deliver(user, subject, body)
-        }
-        history.touchAll(users.map { it.id }, notice.kind)
-        return out
+        history.touchAll(wanting.map { it.id }, notice.kind)
+        return sent + optedOut.map { Delivery.skipped(it.id) }
     }
 
     /** Resends a notice that failed, if it has attempts left. */
@@ -181,14 +186,16 @@ class Notifications(
         if (!user.wants("receipt")) {
             return Delivery.skipped(user.id)
         }
-        val days = if (refund.toCard) 5 else 1
-        val amount = refund.amount.format(user.locale ?: defaultLocale)
-        val extra = mapOf("days" to days, "amount" to amount)
-        val body = templates.render("refund", refund.payload + extra)
-        val subject = subjects.of("refund", user.locale)
+        val notice = RefundNotice(
+            days = if (refund.toCard) 5 else 1,
+            amount = refund.amount.format(user.locale ?: defaultLocale),
+            orderId = refund.orderId,
+        )
+        val body = templates.render("refund", refund.payload + notice.toPayload())
+        val subject = subjects.of("refund", user.locale, notice.orderId)
 
         val channel = channels.preferred(user)
-        history.touch(user.id, "refund")
+        history.touch(user.id, "refund:${notice.orderId}")
         return channel.deliver(user, subject, body)
     }
 
@@ -208,20 +215,20 @@ class Notifications(
     /** Tells users watching a product that its price dropped. */
     fun sendPriceDrop(watchers: List<User>, drop: PriceDrop): Int {
         var sent = 0
-        for (user in watchers) {
-            if (!user.wants("price_drop")) {
+        for (watcher in watchers) {
+            if (!watcher.wants("price_drop")) {
                 continue
             }
             val key = "price_drop:${drop.sku}"
-            if (history.attempts(user.id, key) > 0) {
+            if (history.lastSent(watcher.id, key)?.isAfter(drop.since) == true) {
                 continue
             }
             val body = templates.render("price_drop", drop.payload)
-            val subject = subjects.of("price_drop", user.locale)
-            val email = channels.email(user)
-            val delivery = email.deliver(user, subject, body)
+            val subject = subjects.of("price_drop", watcher.locale)
+            val email = channels.email(watcher)
+            val delivery = email.deliver(watcher, subject, body)
             if (delivery.ok) {
-                history.touch(user.id, key)
+                history.touch(watcher.id, key)
                 sent++
             }
         }
