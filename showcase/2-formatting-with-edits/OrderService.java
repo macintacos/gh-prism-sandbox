@@ -93,12 +93,22 @@ public final class OrderService {
 
         Money total = priceOrder(order, customer);
         Money shipping = shippingFor(order, customer);
+        try {
+            stock.reserve(order.id(), order.lines());
+        } catch (OutOfStockException e) {
+            metrics.increment("orders.out_of_stock");
+            return Confirmation.rejected("out of stock: " + e.sku());
+        }
         Confirmation done = Confirmation.builder()
                 .order(order.id())
                 .total(total.plus(shipping))
                 .confirmedAt(clock.instant())
                 .build();
-        audit.record("confirmed", order.id(), done.total());
+        try {
+            audit.record("confirmed", order.id(), done.total());
+        } catch (AuditUnavailableException e) {
+            metrics.increment("orders.audit_skipped");
+        }
         metrics.increment("orders.confirmed");
         return done;
     }
@@ -134,22 +144,19 @@ public final class OrderService {
 
     /** Splits an order into one shipment per warehouse. */
     public List<Shipment> split(Order order, Warehouses warehouses) {
-        var byWarehouse = new LinkedHashMap<String, List<OrderLine>>();
-        for (OrderLine line : order.lines()) {
-            String warehouse = warehouses.nearestWith(line.sku());
-            byWarehouse
-                    .computeIfAbsent(warehouse, k -> new ArrayList<>())
-                    .add(line);
-        }
+        var byWarehouse = order.lines().stream()
+                .collect(Collectors.groupingBy(
+                        line -> warehouses.nearestWith(line.sku()),
+                        LinkedHashMap::new,
+                        Collectors.toList()));
 
-        var shipments = new ArrayList<Shipment>();
-        for (var entry : byWarehouse.entrySet()) {
-            shipments.add(new Shipment(
-                    order.id(),
-                    entry.getKey(),
-                    entry.getValue(),
-                    order.deliverBy()));
-        }
+        var shipments = byWarehouse.entrySet().stream()
+                .map(entry -> new Shipment(
+                        order.id(),
+                        entry.getKey(),
+                        entry.getValue(),
+                        order.deliverBy()))
+                .toList();
         metrics.gauge("orders.shipments", shipments.size());
         return shipments;
     }
@@ -213,21 +220,21 @@ public final class OrderService {
 
     /** Applies a coupon code, if it is valid for this customer. */
     public boolean applyCoupon(
-            Order order, Customer customer, String code) {
-        Coupon coupon = rules.coupon(code);
-        if (coupon == null || coupon.isExpired(clock.instant())) {
+            Order order, Customer customer, CouponRequest request) {
+        Coupon coupon = rules.coupon(request.code());
+        if (coupon == null || coupon.isExpired(request.at())) {
             return false;
         }
-        if (coupon.isSingleUse() && customer.hasUsed(code)) {
+        if (coupon.isSingleUse() && customer.hasUsed(request.code())) {
             return false;
         }
 
-        Money subtotal = order.subtotal();
+        Money subtotal = request.excludeSaleItems() ? order.fullPriceSubtotal() : order.subtotal();
         order.addDiscount(
                 coupon.amountFor(subtotal, customer.loyaltyTier()),
-                code);
-        customer.markUsed(code);
-        audit.record("coupon", order.id(), order.discount());
+                request.code());
+        customer.markUsed(request.code());
+        audit.record("coupon", order.id(), order.discount(), request.channel());
         return true;
     }
 
@@ -250,18 +257,20 @@ public final class OrderService {
         if (quantity <= 0 || quantity > line.quantity()) {
             throw new IllegalArgumentException("bad refund quantity");
         }
-        Money unit = line.price().divide(line.quantity(),
-                Money.Rounding.HALF_UP);
+        Money unit = line.price()
+                .minus(line.discount())
+                .divide(line.quantity(), Money.Rounding.HALF_EVEN);
         Money refund = unit.times(quantity);
         if (quantity == line.quantity()) {
             order.removeLine(line);
         } else {
-            int kept = line.quantity() - quantity;
-            order.replaceLine(line.withQuantity(kept));
+            order.replaceLine(
+                    line.withQuantity(line.quantity() - quantity));
         }
-
-        order.setTotal(order.total().minus(refund));
-        audit.record("line refunded", order.id(), refund);
+        order.setTotal(
+                order.total().minus(refund).max(Money.ZERO));
+        audit.record(
+                "line refunded", order.id(), refund, quantity);
         metrics.increment("orders.line_refunds");
         return refund;
     }

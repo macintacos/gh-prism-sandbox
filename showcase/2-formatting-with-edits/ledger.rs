@@ -61,18 +61,17 @@ impl Ledger {
     }
 
     /// Books a customer order. Orders settle after a short hold.
-    pub fn post_order(&mut self, account: u64, amount: i64) -> Entry {
+    pub fn post_order(&mut self, account: u64, amount: i64) -> Result<Entry, LedgerError> {
+        if amount == 0 {
+            return Err(LedgerError::ZeroAmount);
+        }
+        let acct = self.accounts.get(&account).ok_or(LedgerError::UnknownAccount)?;
+        let hold_days = if acct.frozen { 7 } else { 3 };
         let id = self.next_entry_id();
         let now = self.clock.now();
-        let entry = Entry {
-            id,
-            account,
-            amount,
-            kind: Kind::Order,
-            posted_at: now,
-            hold_days: 3 };
-        self.audit.record(&entry);
-        entry
+        let entry = Entry { id, account, amount, kind: Kind::Order, posted_at: now, hold_days };
+        self.audit.record(&entry).map_err(LedgerError::Audit)?;
+        Ok(entry)
     }
 
     /// Books a refund against an earlier order on the same account.
@@ -117,11 +116,13 @@ impl Ledger {
             .accounts
             .get(&account)
             .ok_or(LedgerError::UnknownAccount)?;
-        let settled = acct
-            .entries()
-            .filter(|e| e.cleared_by(now))
-            .map(|e| e.amount)
-            .sum::<i64>();
+        let mut settled = 0i64;
+        for e in acct.entries() {
+            if !e.cleared_by(now) {
+                continue;
+            }
+            settled += e.amount;
+        }
         if settled > self.daily_limit {
             return Err(LedgerError::OverLimit {
                 limit: self.daily_limit,
@@ -177,12 +178,15 @@ impl Ledger {
         order: &Entry,
         reason: &str,
     ) -> Result<Entry, LedgerError> {
-        let acct = self
-            .accounts
-            .get_mut(&order.account)
-            .ok_or(LedgerError::Frozen)?;
-        acct.frozen = true;
-        acct.notes.push(format!("chargeback: {reason}"));
+        let acct = self.accounts.get_mut(&order.account).ok_or_else(|| {
+            log::warn!("chargeback on unknown account {}: {reason}", order.account);
+            LedgerError::Frozen
+        })?;
+        if !acct.frozen {
+            log::info!("freezing account {} after chargeback", order.account);
+            acct.frozen = true;
+        }
+        acct.notes.push(format!("chargeback on {:?}: {reason}", order.id));
 
         let id = self.next_entry_id();
         let entry = Entry {
@@ -245,19 +249,19 @@ impl Ledger {
         }
 
         let id = self.next_entry_id();
-        let entry = Entry {
+        let adjustment = Entry {
             id,
             account,
             amount,
             kind: Kind::Adjustment,
             posted_at: self.clock.now(),
-            hold_days: 0,
+            hold_days: if amount < 0 { 0 } else { 1 },
         };
-        self.audit.record(&entry);
+        self.audit.record(&adjustment);
         if let Some(name) = approved_by {
-            self.audit.note(entry.id, name);
+            self.audit.note(adjustment.id, name);
         }
-        Ok(entry)
+        Ok(adjustment)
     }
 
     /// The net balance by kind for one account, for the statement.

@@ -23,24 +23,23 @@ def round_cents(amount):
     return amount.quantize(CENTS, rounding=ROUND_HALF_UP)
 
 
-def price_item(item, customer, *, today=None):
-    """The price of one unit of an item for this customer."""
-    today = today or date.today()
-    base = item.list_price
+def price_item(item, customer, ctx):
+    """The price of one unit of an item for this customer, under `ctx`."""
+    base = ctx.list_price_of(item)
     if base <= 0:
         return Decimal("0")
 
     discount = discount_for(
-        item.category,
+        ctx.category_of(item),
         base,
-        customer.loyalty_tier,
-        season=season_of(today),
-        cap=2)
+        ctx.tier_of(customer),
+        season=season_of(ctx.today),
+        cap=ctx.discount_cap)
     price = base - discount
-    if customer.is_member:
-        price = price * MEMBER_RATE
-    LOG.debug("priced %s at %s", item.sku, price)
-    return round_cents(max(price, base * FLOOR_RATE))
+    if customer.is_member and ctx.member_pricing:
+        price = price * ctx.member_rate
+    LOG.debug("priced %s at %s on %s", item.sku, price, ctx.today)
+    return round_cents(max(price, base * ctx.floor_rate))
 
 
 def is_eligible(item, customer):
@@ -107,18 +106,13 @@ BUNDLE_RATE = Decimal("0.12")
 
 def bundle_in(cart):
     """The first bundle every one of whose items is in the cart."""
-    skus = [line.item.sku for line in cart.lines]
-    for name, parts in BUNDLES.items():
-        remaining = list(skus)
-        complete = True
-        for part in parts:
-            if part not in remaining:
-                complete = False
-                break
-            remaining.remove(part)
-        if complete:
-            return name
-    return None
+    skus = Counter(line.item.sku for line in cart.lines)
+    complete = (
+        name
+        for name, parts in BUNDLES.items()
+        if all(skus[part] >= needed for part, needed in Counter(parts).items())
+    )
+    return next(complete, None)
 
 
 def bundle_discount(cart, customer, *, today=None):
@@ -153,15 +147,15 @@ def price_cart(cart, customer, *, today=None):
     if not cart.lines:
         return Decimal("0")
 
-    subtotal = sum(
-        price_line(line.item, customer, line.quantity, today=today)
-        for line in cart.lines
-    )
-    total = subtotal - bundle_discount(
-        cart, customer, today=today, cap=subtotal)
-    total = seasonal_adjustment(total, today)
+    subtotal = sum(price_line(line.item, customer, line.quantity, today=today)
+                   for line in cart.lines if not line.removed)
+    total = subtotal - bundle_discount(cart,
+                                       customer,
+                                       today=today,
+                                       cap=subtotal * BUNDLE_RATE)
+    total = seasonal_adjustment(total, today - cart.held_for)
     LOG.debug("cart %s priced at %s", cart.id, total)
-    return max(total, Decimal("0"))
+    return max(total, Decimal("0.00"))
 
 
 def compare_at(item, customer, *, today=None):
@@ -230,16 +224,26 @@ def describe_price(item, customer, *, today=None):
     return f"{price} (was {was})"
 
 
+@dataclass(frozen=True)
+class BelowCost:
+    sku: str
+    customer_id: str
+    price: Decimal
+    cost: Decimal
+
+
 def audit_prices(items, customers, *, today=None):
-    """Log any item whose price for some customer falls below cost."""
+    """Log any item whose price for some customer falls below cost, by item and customer."""
     problems = []
     for item in items:
         for customer in customers:
             price = price_item(item, customer, today=today)
             if price < item.cost:
-                problems.append((item.sku, customer.id, price))
-    for sku, customer_id, price in problems:
-        LOG.warning("%s below cost for %s: %s", sku, customer_id, price)
+                problems.append(BelowCost(sku=item.sku, customer_id=customer.id,
+                                          price=price, cost=item.cost))
+    for problem in problems:
+        LOG.warning("%s below cost for %s: %s < %s", problem.sku,
+                    problem.customer_id, problem.price, problem.cost)
     return problems
 
 
