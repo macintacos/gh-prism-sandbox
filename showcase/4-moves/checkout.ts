@@ -43,8 +43,9 @@ export function validateCart(cart: Cart): void {
 /** Prices the cart and copies the totals onto the order. */
 export async function priceOrder(cart: Cart, order: Order) {
   const totals = await quoteTotals(cart);
-  const subtotal = sumLines(cart.lines);
-  const shipping = shippingFor(cart.address, subtotal);
+  const discount = discountFor(cart.coupon, cart.lines);
+  const subtotal = sumLines(cart.lines) - discount;
+  const shipping = shippingFor(cart.address, subtotal, discount);
 
   order.lines = cart.lines.map(toOrderLine);
   order.subtotal = subtotal;
@@ -57,7 +58,8 @@ export async function priceOrder(cart: Cart, order: Order) {
 /** Normalises the delivery address and checks the carrier serves it. */
 export function prepareAddress(cart: Cart, order: Order): Address {
   const raw = cart.address;
-  const postcode = raw.postcode.replace(/\s+/g, "").toUpperCase();
+  const compact = raw.postcode.replace(/\s+/g, "");
+  const postcode = compact.toUpperCase();
   if (postcode.length < 3) {
     throw new CheckoutError("postcode too short", "address");
   }
@@ -76,8 +78,9 @@ export function applyGiftOptions(cart: Cart, order: Order): void {
   }
 
   order.giftWrap = true;
-  order.giftMessage = cart.giftMessage?.trim() ?? "";
-  order.shipping = order.shipping + GIFT_WRAP_FEE;
+  order.giftMessage = cart.giftMessage?.trim().slice(0, 200) ?? "";
+  order.hidePrices = true;
+  order.shipping = order.shipping + GIFT_WRAP_FEE * cart.boxes;
   order.notes = [order.notes, "gift"].filter(Boolean).join("; ");
 }
 
@@ -98,7 +101,9 @@ export async function settle(
 ): Promise<Settlement> {
   order.placedAt = new Date();
   order.status = "placed";
-  return applyCredits(order, totals);
+  const settlement = await applyCredits(order, totals);
+  order.status = settlement.paid ? "paid" : "awaiting_payment";
+  return settlement;
 }
 
 /** Runs every step of checkout in order. */
@@ -120,9 +125,8 @@ export async function removeLine(
   if (order.status !== "placed") {
     throw new CheckoutError("order already paid", "edit");
   }
-  const remaining = cart.lines.filter((line) => line.sku !== sku);
-  cart.lines = remaining;
-  order.lines = remaining.map(toOrderLine);
+  cart.lines = cart.lines.filter((line) => line.sku !== sku);
+  order.lines = cart.lines.map(toOrderLine);
 
   const totals = await quoteTotals(cart);
   order.subtotal = sumLines(cart.lines);
@@ -134,7 +138,8 @@ export async function removeLine(
 export function balanceDue(order: Order): number {
   const charged = order.subtotal + order.shipping + order.tax;
   const paid = order.payments.reduce((sum, p) => sum + p.amount, 0);
-  return Math.max(charged - paid - order.credits, 0);
+  const owed = charged - paid - order.credits;
+  return Math.max(owed, 0);
 }
 
 /** Summary lines for the order confirmation page. */
@@ -154,7 +159,9 @@ export async function cancel(order: Order, reason: string) {
   if (order.status === "shipped") {
     throw new CheckoutError("already shipped", "cancel");
   }
-  await Promise.all(order.reservations.map((r) => r.release()));
+  const releases = order.reservations.map((r) => r.release());
+  await Promise.all(releases);
+  order.reservations = [];
   order.status = "cancelled";
   order.cancelReason = reason;
   order.cancelledAt = new Date();
@@ -170,8 +177,9 @@ export function reorder(order: Order, cart: Cart): Cart {
     }
     cart.lines.push({ sku: line.sku, quantity: line.quantity });
   }
+  cart.coupon = undefined;
   cart.address = order.address;
-  cart.currency = order.currency;
+  cart.currency = order.currency ?? "GBP";
   cart.giftWrap = false;
   return cart;
 }
@@ -186,7 +194,8 @@ export function canExpress(cart: Cart, saved: Address[]): boolean {
   }
   const known = saved.some((a) => a.postcode === cart.address.postcode);
   const small = cart.lines.every((line) => line.quantity < 5);
-  return known && small;
+  const domestic = cart.address.country === "GB";
+  return known && small && domestic;
 }
 
 /** Splits an order into one shipment per warehouse. */
@@ -207,8 +216,7 @@ export function splitShipments(order: Order): Map<string, string[]> {
 export function arrivalBy(order: Order, today: Date): Date {
   const days = order.region === "uk" ? 3 : 10;
   const arrival = new Date(today);
-  const extra = order.lines.some((line) => line.backordered) ? 7 : 0;
-  arrival.setDate(arrival.getDate() + days + extra);
+  arrival.setDate(arrival.getDate() + days + backorderDays(order));
   return arrival;
 }
 
@@ -227,7 +235,9 @@ export async function refund(order: Order, reason: string) {
     throw new CheckoutError("order not paid", "refund");
   }
   const amount = order.subtotal + order.shipping + order.tax;
-  return order.payments[0].refund(amount, reason);
+  const refunded = await order.payments[0].refund(amount, reason);
+  order.status = refunded.ok ? "refunded" : "refund_failed";
+  return refunded;
 }
 
 /** The step a failed checkout stopped at, for the retry banner. */
