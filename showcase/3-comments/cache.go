@@ -15,9 +15,10 @@ var ErrMissing = errors.New("cache: key not found")
 // DefaultTTL suits records that change at most a few times a day.
 const DefaultTTL = 5 * time.Minute
 
-// Entry is one cached record. Data holds the encoded record exactly as
-// the shared store returned it; Expires is when the local copy stops
-// being trusted, which may be earlier than the store's own expiry.
+// Entry is one cached record. Data holds the encoded record exactly
+// as the shared store returned it; Expires is when the local copy
+// stops being trusted, which may be earlier than the store's own
+// expiry.
 type Entry struct {
 	Key     string
 	Data    []byte
@@ -44,9 +45,9 @@ type Cache struct {
 
 // Stats counts what the cache did since it started.
 type Stats struct {
-	Hits    uint64 // served from the local shard
+	Hits    uint64 // answered from the local shard
 	Misses  uint64 // went to the shared store
-	Expired uint64 // found locally but too old to use
+	Expired uint64 // found locally but too stale to use
 	Evicted uint64
 }
 
@@ -60,9 +61,9 @@ func New(shared Store, ttl time.Duration, now func() time.Time) *Cache {
 	}
 }
 
-// Get returns the cached record for key. It reads the local
-// shard first and falls back to the shared store when the entry is
-// missing or expired, and it refreshes the local copy on the way out.
+// Get returns the cached record for key. It reads the local shard
+// first and falls back to the shared store when the entry is missing
+// or stale, and it refreshes the local copy on the way out.
 func (c *Cache) Get(ctx context.Context, key string) (Entry, error) {
 	c.mu.RLock()
 	entry, ok := c.local[key]
@@ -85,9 +86,9 @@ func (c *Cache) Get(ctx context.Context, key string) (Entry, error) {
 }
 
 /*
- * Put writes an entry to both levels. The shared store is written
- * first, so a crash between the two writes leaves the local shard
- * stale rather than ahead of the store.
+ * Put writes an entry to both levels. The shared store is
+ * written first, so a crash between the two writes leaves the
+ * local shard stale rather than ahead of the store.
  */
 func (c *Cache) Put(ctx context.Context, e Entry) error {
 	if err := c.shared.Save(ctx, e); err != nil {
@@ -105,7 +106,8 @@ func (c *Cache) Put(ctx context.Context, e Entry) error {
 // value.
 //
 // Invalidate does not wait for other processes to drop their local
-// copies; they keep serving them until their own ttl runs out.
+// copies; they keep serving the old value until their own ttl runs
+// out.
 func (c *Cache) Invalidate(ctx context.Context, key string) error {
 	c.mu.Lock()
 	delete(c.local, key)
@@ -136,8 +138,8 @@ func (c *Cache) Snapshot() Stats {
 }
 
 // Sweep removes every local entry that has expired and reports how
-// many it removed. Run it on a timer; Get already skips expired
-// entries, so Sweep only bounds the shard's memory.
+// many it removed. Run it on a ticker; Get already skips expired
+// entries, so Sweep only bounds how much memory the shard holds.
 func (c *Cache) Sweep() int {
 	now := c.now()
 	c.mu.Lock()
@@ -174,8 +176,8 @@ func (c *Cache) GetMany(
 ) map[string]Entry {
 	found := make(map[string]Entry, len(keys))
 	for _, key := range keys {
-		// A missing key is not an error here: the caller asked for
-		// whatever is cached, and gets a shorter map.
+		// A missing key is not an error here: the caller asked
+		// for whatever is cached, and gets back a shorter map.
 		entry, err := c.Get(ctx, key)
 		if err != nil {
 			continue
@@ -197,8 +199,8 @@ func (c *Cache) Refresh(
 	entry, ok := c.local[key]
 	c.mu.RUnlock()
 	// The local copy is at least as new as what the caller saw, so
-	// there is nothing to reload. Skipping the store here is what
-	// keeps a burst of refreshes from turning into a burst of loads.
+	// there is nothing to reload. Skipping the store here keeps a
+	// burst of refreshes from turning into a burst of loads.
 	if ok && entry.Version >= seen {
 		return entry, nil
 	}
@@ -213,8 +215,8 @@ func (c *Cache) Refresh(
 
 /*
  * Len returns how many entries the local shard holds, expired or not.
- * It is meant for metrics and tests; do not use it to decide whether
- * a key is cached.
+ * It is meant for dashboards and tests; do not use it to decide
+ * whether a key is cached.
  */
 func (c *Cache) Len() int {
 	c.mu.RLock()
@@ -248,8 +250,8 @@ func (c *Cache) TTL() time.Duration {
 }
 
 // SetTTL changes how long new local entries live. Entries already in
-// the shard keep the expiry they were stored with; call Clear as well
-// to apply the new ttl to every key at once.
+// the shard keep the expiry they were stored with; call Clear too if
+// the new ttl should apply to every key at once.
 func (c *Cache) SetTTL(ttl time.Duration) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
