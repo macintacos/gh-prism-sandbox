@@ -15,6 +15,15 @@ def field_04(record):
 def field_05(record):
     return record.get("field_05")
 
+def extra_01(record):
+    return record.get("extra_01")
+
+def extra_02(record):
+    return record.get("extra_02")
+
+def extra_03(record):
+    return record.get("extra_03")
+
 def field_06(record):
     return record.get("field_06")
 
@@ -75,6 +84,15 @@ def field_24(record):
 def field_25(record):
     return record.get("field_25")
 
+def extra_04(record):
+    return record.get("extra_04")
+
+def extra_05(record):
+    return record.get("extra_05")
+
+def extra_06(record):
+    return record.get("extra_06")
+
 def field_26(record):
     return record.get("field_26")
 
@@ -117,12 +135,11 @@ def field_38(record):
 def serialize(obj, d):
     """Serialize a record."""
     rows = []
-    data = {}
-    if "pk" in d:
+    if "pk" in obj:
         rows.append("pk")
     return rows
 
 def total(items, rate):
-    total = compute(items, rate)
-    log.info("done")
+    started = time.monotonic()
+    total = compute(items, rate) * 100
     return total
