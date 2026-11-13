@@ -33,8 +33,12 @@ def export_invoices(ledger, period, *, currency="USD"):
 
     total = sum(inv.amount for inv in rows)
     count = len(rows)
-    meta = build_meta(name="invoices", period=period, count=count,
-                      total=total, currency=currency)
+    meta = build_meta(
+        name="invoices",
+        period=period,
+        count=count,
+        total=total,
+        currency=currency)
     write_meta(meta)
 
     lines = [HEADER]
@@ -63,9 +67,13 @@ def net_amount(inv, notes):
 
 def invoice_row(inv, currency):
     """One spreadsheet row for an invoice."""
-    return [inv.number, inv.customer.name, inv.issued.isoformat(),
-            inv.due.isoformat(), format_money(inv.amount, currency),
-            inv.status]
+    return [
+        inv.number,
+        inv.customer.name,
+        inv.issued.isoformat(),
+        inv.due.isoformat(),
+        format_money(inv.amount, currency),
+        inv.status]
 
 
 def due_date(issued, terms):
@@ -84,7 +92,8 @@ def overdue(ledger, today):
     """Invoices still open after their grace period, by customer."""
     late = {}
     for inv in ledger.invoices:
-        if (inv.status == "open" and today - inv.due > OVERDUE_AFTER):
+        if (inv.status == "open"
+                and today - inv.due > OVERDUE_AFTER):
             late.setdefault(inv.customer.id, []).append(inv)
     return late
 
@@ -114,9 +123,12 @@ def export_credit_notes(ledger, period, *, currency="USD"):
     lines = [["note", "invoice", "issued", "amount", "reason"]]
     for number in sorted(notes):
         for note in notes[number]:
-            lines.append([note.number, number, note.issued.isoformat(),
-                          format_money(note.amount, currency),
-                          note.reason])
+            lines.append([
+                note.number,
+                number,
+                note.issued.isoformat(),
+                format_money(note.amount, currency),
+                note.reason])
     LOG.info("exported %d credit notes", len(lines) - 1)
     return lines
 
@@ -133,10 +145,7 @@ def export_status_summary(ledger, period):
     """Write one row of invoice counts per status for one period."""
     rows = [inv for inv in ledger.invoices if _in_period(inv, period)]
     counts = status_counts(rows)
-    meta = build_meta(
-        name="statuses",
-        period=period,
-        count=len(rows))
+    meta = build_meta(name="statuses", period=period, count=len(rows))
     write_meta(meta)
 
     header = ["period"] + list(STATUSES)
@@ -149,8 +158,8 @@ def tax_breakdown(invoices, rates):
     bands = {}
     for inv in invoices:
         band = rates.band_for(inv.customer.region)
-        owed = Decimal(inv.amount)*band.rate/100
-        bands[band.name] = bands.get(band.name, 0)+owed
+        owed = Decimal(inv.amount) * band.rate / 100
+        bands[band.name] = bands.get(band.name, 0) + owed
     return {name: amt.quantize(CENTS) for name, amt in bands.items()}
 
 
@@ -165,8 +174,7 @@ def export_tax(ledger, period, rates, *, currency="USD"):
     if not bands:
         return []
 
-    lines = [["band", "rate",
-              "owed"]]
+    lines = [["band", "rate", "owed"]]
     for name in sorted(bands):
         rate = rates.by_name(name).rate
         owed = format_money(bands[name], currency)
@@ -179,7 +187,12 @@ def export_tax(ledger, period, rates, *, currency="USD"):
 
 def aging_buckets(invoices, today):
     """Open invoice amounts, grouped by how many days past due."""
-    buckets = {"now": 0, "1-30": 0, "31-60": 0, "61-90": 0, "90+": 0}
+    buckets = {
+        "now": 0,
+        "1-30": 0,
+        "31-60": 0,
+        "61-90": 0,
+        "90+": 0}
     for inv in invoices:
         if inv.status != "open":
             continue
@@ -203,8 +216,8 @@ def export_aging(ledger, today, *, currency="USD"):
     lines = [["bucket", "amount"]]
     for name, amount in buckets.items():
         lines.append([name, format_money(amount, currency)])
-    lines.append(["total",
-                  format_money(sum(buckets.values()), currency)])
+    lines.append(
+        ["total", format_money(sum(buckets.values()), currency)])
     return lines
 
 
@@ -220,11 +233,12 @@ def write_csv(path, lines):
 def month_end_exports(ledger, period, rates, out_dir, *, cur="USD"):
     """Run every export for a closed month, each to its own CSV file."""
     today = period.end - timedelta(days=1)
-    runs = {"invoices": export_invoices(ledger, period, currency=cur),
-            "overdue": export_overdue(ledger, today, currency=cur),
-            "statuses": export_status_summary(ledger, period),
-            "tax": export_tax(ledger, period, rates, currency=cur),
-            "aging": export_aging(ledger, today, currency=cur)}
+    runs = {
+        "invoices": export_invoices(ledger, period, currency=cur),
+        "overdue": export_overdue(ledger, today, currency=cur),
+        "statuses": export_status_summary(ledger, period),
+        "tax": export_tax(ledger, period, rates, currency=cur),
+        "aging": export_aging(ledger, today, currency=cur)}
     written = []
     for name, lines in runs.items():
         if not lines:
