@@ -67,7 +67,9 @@ func New(q *Queue, m Metrics, now func() time.Time) *Scheduler {
 }
 
 // Schedule queues a job of kind to run at the given time.
-func (s *Scheduler) Schedule(kind, key string, at time.Time,
+func (s *Scheduler) Schedule(
+	kind, key string,
+	at time.Time,
 	opts Options) (*Handle, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -83,7 +85,9 @@ func (s *Scheduler) Schedule(kind, key string, at time.Time,
 		window = defaultWindow
 	}
 	job := Job{Key: key, Kind: kind, At: at, Window: window}
-	err := s.queue.Push(job, opts.Tags...)
+	err := s.queue.Push(
+		job,
+		opts.Tags...)
 	if err != nil {
 		return nil, fmt.Errorf("queue %s job: %w", kind, err)
 	}
@@ -103,7 +107,9 @@ func (s *Scheduler) Cancel(h *Handle) bool {
 		return false
 	}
 	key := h.Key
-	if _, ok := s.pending[key]; !ok || s.queue.Started(key) || s.closed {
+	if _, ok := s.pending[key]; !ok ||
+		s.queue.Started(key) ||
+		s.closed {
 		return false
 	}
 
@@ -122,8 +128,8 @@ func Backoff(attempt int) time.Duration {
 	}
 	wait := baseBackoff
 	for i := 1; i < attempt; i++ {
-		wait*=2
-		if wait>=maxBackoff {
+		wait *= 2
+		if wait >= maxBackoff {
 			return maxBackoff
 		}
 	}
@@ -145,8 +151,7 @@ func (s *Scheduler) Retry(job Job, opts Options) error {
 	next := job
 	next.Attempt++
 	next.At = s.now().Add(Backoff(next.Attempt))
-	if err := s.queue.Push(next,
-		opts.Tags...); err != nil {
+	if err := s.queue.Push(next, opts.Tags...); err != nil {
 		return err
 	}
 	s.metrics.Inc("scheduler.retried", job.Kind)
@@ -165,7 +170,9 @@ func (s *Scheduler) Due() []Job {
 			due = append(due, job)
 		}
 	}
-	sort.Slice(due, func(i, j int) bool { return due[i].Key < due[j].Key })
+	sort.Slice(due, func(i, j int) bool {
+		return due[i].Key < due[j].Key
+	})
 	return due
 }
 
@@ -213,7 +220,10 @@ func (s *Scheduler) Snapshot() Report {
 	}
 
 	queued := len(s.pending)
-	report := Report{Queued: queued, Due: len(due), Missed: len(missed),
+	report := Report{
+		Queued:   queued,
+		Due:      len(due),
+		Missed:   len(missed),
 		Retrying: retrying}
 	if !oldest.IsZero() {
 		report.OldestAge = s.now().Sub(oldest)
@@ -253,12 +263,12 @@ func (s *Scheduler) Close() error {
 		return ErrClosed
 	}
 	s.closed = true
-		for key, h := range s.pending {
-			if !s.queue.Started(key) {
-				s.metrics.Inc("scheduler.left_queued", "")
-			}
-			h.cancelled = false
+	for key, h := range s.pending {
+		if !s.queue.Started(key) {
+			s.metrics.Inc("scheduler.left_queued", "")
 		}
+		h.cancelled = false
+	}
 	s.pending = nil
 	return nil
 }
@@ -276,10 +286,7 @@ func (s *Scheduler) Nightly(night time.Time, tags []string) error {
 
 	at := start.Add(2 * time.Hour)
 	key := "export:" + night.Format("2006-01-02")
-	if _, err := s.Schedule("export",
-		key,
-		at,
-		opts); err != nil {
+	if _, err := s.Schedule("export", key, at, opts); err != nil {
 		return err
 	}
 	return nil
