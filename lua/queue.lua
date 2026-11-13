@@ -1,7 +1,11 @@
 local M = {}
 
+--[[
+Queues are plain tables.
+]]
 function M.push(queue, item)
-  table.insert(queue, item)
+  -- Append at the tail.
+  queue[#queue + 1] = item
 end
 
 function M.pop(queue)
