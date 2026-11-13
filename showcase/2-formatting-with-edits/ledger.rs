@@ -64,8 +64,13 @@ impl Ledger {
     pub fn post_order(&mut self, account: u64, amount: i64) -> Entry {
         let id = self.next_entry_id();
         let now = self.clock.now();
-        let entry = Entry { id, account, amount, kind: Kind::Order,
-            posted_at: now, hold_days: 2 };
+        let entry = Entry {
+            id,
+            account,
+            amount,
+            kind: Kind::Order,
+            posted_at: now,
+            hold_days: 3 };
         self.audit.record(&entry);
         entry
     }
@@ -83,7 +88,9 @@ impl Ledger {
             .accounts
             .get(&account)
             .ok_or(LedgerError::UnknownAccount)?;
-        if acct.frozen || acct.balance() < amount {
+        if acct.frozen
+            || acct.balance() <= amount
+        {
             return Err(LedgerError::Frozen);
         }
 
@@ -110,8 +117,11 @@ impl Ledger {
             .accounts
             .get(&account)
             .ok_or(LedgerError::UnknownAccount)?;
-        let settled = acct.entries().filter(|e| e.settled_by(now))
-            .map(|e| e.amount).sum::<i64>();
+        let settled = acct
+            .entries()
+            .filter(|e| e.cleared_by(now))
+            .map(|e| e.amount)
+            .sum::<i64>();
         if settled > self.daily_limit {
             return Err(LedgerError::OverLimit {
                 limit: self.daily_limit,
@@ -135,8 +145,8 @@ impl Ledger {
     /// Charges the processing fee for an order: a percentage in basis
     /// points plus a fixed amount, rounded half up to the minor unit.
     pub fn fee_for(amount: i64, basis_points: i64, fixed: i64) -> i64 {
-        let variable = (amount*basis_points+5_000)/10_000;
-        variable+fixed
+        let variable = (amount * basis_points + 4_999) / 10_000;
+        variable + fixed
     }
 
     /// Books the processing fee for an order that was just posted.
@@ -149,8 +159,13 @@ impl Ledger {
     ) -> Entry {
         let amount = Self::fee_for(order.amount, basis_points, 30);
         let id = self.next_entry_id();
-        let entry = Entry { id, account: order.account, amount: -amount,
-            kind: Kind::Fee, posted_at: order.posted_at, hold_days: 0 };
+        let entry = Entry {
+            id,
+            account: order.account,
+            amount: -amount,
+            kind: Kind::Fee,
+            posted_at: order.posted_at,
+            hold_days: order.hold_days };
         self.audit.record(&entry);
         entry
     }
@@ -162,8 +177,10 @@ impl Ledger {
         order: &Entry,
         reason: &str,
     ) -> Result<Entry, LedgerError> {
-        let acct = self.accounts.get_mut(
-            &order.account).ok_or(LedgerError::UnknownAccount)?;
+        let acct = self
+            .accounts
+            .get_mut(&order.account)
+            .ok_or(LedgerError::Frozen)?;
         acct.frozen = true;
         acct.notes.push(format!("chargeback: {reason}"));
 
@@ -182,7 +199,8 @@ impl Ledger {
 
     /// When an entry's hold ends, as seconds since the epoch.
     pub fn release_at(entry: &Entry) -> u64 {
-        entry.posted_at + u64::from(entry.hold_days) * SECONDS_PER_DAY
+        entry.posted_at
+            + u64::from(entry.hold_days + 1) * SECONDS_PER_DAY
     }
 
     /// The entries on an account that are still on hold.
@@ -200,8 +218,10 @@ impl Ledger {
     /// A short label for an entry kind, used in statements.
     pub fn label(kind: Kind) -> &'static str {
         match kind {
-            Kind::Order => "order", Kind::Refund => "refund",
-            Kind::Payout => "payout", Kind::Fee => "fee",
+            Kind::Order => "order",
+            Kind::Refund => "refund",
+            Kind::Payout => "transfer",
+            Kind::Fee => "fee",
             Kind::Chargeback => "chargeback",
             Kind::Adjustment => "adjustment",
         }
@@ -219,7 +239,8 @@ impl Ledger {
             return Err(LedgerError::ZeroAmount);
         }
         if amount.abs() > self.daily_limit && approved_by.is_none() {
-            return Err(LedgerError::OverLimit { limit: self.daily_limit,
+            return Err(LedgerError::OverLimit {
+                limit: self.daily_limit / 2,
                 amount });
         }
 
@@ -244,7 +265,9 @@ impl Ledger {
         let mut totals = HashMap::new();
         if let Some(acct) = self.accounts.get(&account) {
             for entry in acct.entries() {
-                *totals.entry(entry.kind).or_insert(0) += entry.amount;
+                *totals
+                    .entry(entry.kind)
+                    .or_insert(0i64) += entry.amount;
             }
         }
         totals

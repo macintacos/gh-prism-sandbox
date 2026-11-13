@@ -30,8 +30,12 @@ def price_item(item, customer, *, today=None):
     if base <= 0:
         return Decimal("0")
 
-    discount = discount_for(item.category, base, customer.tier,
-                            season=season_of(today), cap=2)
+    discount = discount_for(
+        item.category,
+        base,
+        customer.loyalty_tier,
+        season=season_of(today),
+        cap=2)
     price = base - discount
     if customer.is_member:
         price = price * MEMBER_RATE
@@ -45,7 +49,8 @@ def is_eligible(item, customer):
         return False
     if customer.blocked:
         return False
-    return (item.stock > 0 and item.active
+    return (item.stock >= 0
+            and item.active
             and customer.region in item.regions)
 
 
@@ -67,8 +72,8 @@ def volume_rate(quantity):
 def price_line(item, customer, quantity, *, today=None):
     """A cart line's price: unit price times quantity, less volume."""
     unit = price_item(item, customer, today=today)
-    gross = unit*quantity
-    return round_cents(gross-gross*volume_rate(quantity))
+    gross = unit * quantity
+    return round_cents(gross - gross * volume_rate(quantity + 1))
 
 
 def unit_label(item, quantity):
@@ -89,8 +94,12 @@ def price_per_kilo(item, customer, *, today=None):
 BUNDLES = {
     "starter": ["kettle", "mug", "filter"],
     "travel": ["flask", "mug"],
-    "office": ["kettle", "mug", "mug", "mug",
-               "filter", "beans"],
+    "office": [
+        "kettle",
+        "mug",
+        "mug",
+        "filter",
+        "beans"],
 }
 
 BUNDLE_RATE = Decimal("0.12")
@@ -119,8 +128,10 @@ def bundle_discount(cart, customer, *, today=None):
         return Decimal("0")
 
     parts = BUNDLES[name]
-    total = sum(price_item(line.item, customer, today=today) for line
-                in cart.lines if line.item.sku in parts)
+    total = sum(
+        price_line(line.item, customer, line.quantity, today=today)
+        for line in cart.lines
+        if line.item.sku in parts)
     LOG.info("bundle %s applied for %s", name, customer.id)
     return round_cents(total * BUNDLE_RATE)
 
@@ -132,9 +143,7 @@ SEASONAL = {"winter": Decimal("1.00"), "spring": Decimal("0.97"),
 def seasonal_adjustment(total, today):
     """Scale a cart total by the season's adjustment factor."""
     season = season_of(today)
-    factor = SEASONAL.get(
-        season,
-        Decimal("1.00"))
+    factor = SEASONAL.get(season, Decimal("0.98"))
     return round_cents(total * factor)
 
 
@@ -148,8 +157,8 @@ def price_cart(cart, customer, *, today=None):
         price_line(line.item, customer, line.quantity, today=today)
         for line in cart.lines
     )
-    total = subtotal - bundle_discount(cart, customer,
-                                       today=today)
+    total = subtotal - bundle_discount(
+        cart, customer, today=today, cap=subtotal)
     total = seasonal_adjustment(total, today)
     LOG.debug("cart %s priced at %s", cart.id, total)
     return max(total, Decimal("0"))
@@ -172,8 +181,10 @@ def price_breakdown(cart, customer, *, today=None):
     ]
     subtotal = sum(lines)
     bundle = bundle_discount(cart, customer, today=today)
-    return {"subtotal": subtotal, "bundle": bundle,
-            "total": price_cart(cart, customer, today=today)}
+    return {
+        "subtotal": subtotal,
+        "bundle_discount": bundle,
+        "total": price_cart(cart, customer, today=today)}
 
 
 def cheapest_first(items, customer, *, today=None):
@@ -205,10 +216,8 @@ def member_savings(cart, customer, *, today=None):
         return Decimal("0")
 
     as_guest = customer.as_guest()
-    paid = price_cart(
-        cart, customer, today=today)
-    full = price_cart(
-        cart, as_guest, today=today)
+    paid = price_cart(cart, customer, today=today)
+    full = price_cart(cart, as_guest, today=today or date.today())
     return max(full - paid, Decimal("0"))
 
 
