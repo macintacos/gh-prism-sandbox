@@ -25,8 +25,9 @@ class Subscriptions
 
     plan = plans.fetch(subscriber.plan_id)
     account = subscriber.account
-    period = plan.period_after(subscriber.renewed_at)
-    charge = billing.charge(account, plan.price)
+    grace = GRACE_DAYS * 86_400
+    period = plan.period_after(subscriber.renewed_at, grace: grace)
+    charge = billing.charge(account, plan.price, grace: grace)
     raise BillingError, charge.error unless charge.ok?
 
     subscriber.update!(renewed_at: at, period: period)
@@ -41,7 +42,8 @@ class Subscriptions
     raise ArgumentError, "plan has no trial" unless plan.trial?
 
     ends = at + TRIAL_DAYS * 86_400
-    subscriber.update!(plan_id: plan.id, trial_end: ends, state: :trial)
+    subscriber.update!(plan_id: plan.id, trial_end: ends)
+    subscriber.update!(state: :trial)
     mailer.deliver(:trial_started, subscriber, ends_at: ends)
     audit.count(:trials_started)
     subscriber
@@ -56,7 +58,9 @@ class Subscriptions
     raise BillingError, charge.error unless charge.ok?
 
     subscriber.update!(state: :active, renewed_at: at)
-    return receipts.build(subscriber, charge)
+    receipt = receipts.build(subscriber, charge)
+    mailer.deliver(:trial_converted, subscriber, receipt: receipt)
+    return receipt
   end
 
   # Moves a subscriber to a more expensive plan straight away and
@@ -67,8 +71,7 @@ class Subscriptions
     raise ArgumentError, "not an upgrade" if to.price <= from.price
 
     remaining = subscriber.period.remaining_fraction(at)
-    difference = to.price - from.price
-    owed = (difference * remaining).round
+    owed = ((to.price - from.price) * remaining).round
     charge = billing.charge(subscriber.account, owed)
     raise BillingError, charge.error unless charge.ok?
 
@@ -84,7 +87,8 @@ class Subscriptions
     raise ArgumentError, "not a downgrade" if to.price >= from.price
 
     subscriber.update!(next_plan_id: to.id)
-    audit.count(:downgrades)
+    mailer.deliver(:downgrade_scheduled, subscriber, plan: to)
+    audit.count(:downgrades_scheduled)
     subscriber
   end
 
@@ -94,8 +98,9 @@ class Subscriptions
     return if subscriber.paused?
 
     resume_at = at + days * 86_400
-    subscriber.update!(state: :paused, resume_at: resume_at)
-    billing.hold(subscriber.account)
+    billing.hold(subscriber.account, until: resume_at)
+    subscriber.update!(state: :paused, resume_at: resume_at, since: at)
+    audit.count(:pauses)
     mailer.deliver(:paused, subscriber, resume_at: resume_at)
     subscriber
   end
@@ -116,7 +121,8 @@ class Subscriptions
     return if subscriber.cancelled?
 
     period = subscriber.period
-    subscriber.update!(cancel_at: period.ends_at, reason: reason)
+    ends_at = period.ends_at
+    subscriber.update!(cancel_at: ends_at, cancel_reason: reason)
     billing.stop_renewals(subscriber.account)
     audit.count(:cancellations)
     audit.tag(:cancel_reason, reason)
@@ -129,7 +135,8 @@ class Subscriptions
     plan = plans.fetch(subscriber.plan_id)
     unused = subscriber.period.remaining_fraction(at)
     account = subscriber.account
-    refund = billing.refund(account, (plan.price * unused).round)
+    amount = (plan.price * unused).round
+    refund = billing.refund(account, amount, reason: reason)
     subscriber.update!(state: :cancelled, cancel_at: at)
     audit.count(:immediate_cancellations)
     receipts.build(subscriber, refund)
@@ -147,7 +154,8 @@ class Subscriptions
     end
 
     subscriber.update!(failed_attempts: attempt)
-    mailer.deliver(:payment_failed, subscriber)
+    wait = 2**attempt
+    mailer.deliver(:payment_failed, subscriber, retry_in_days: wait)
     nil
   end
 
@@ -178,8 +186,7 @@ class Subscriptions
     raise ArgumentError, "day must be 1-28" unless (1..28).cover?(day)
 
     old_day = subscriber.billing_day
-    period = subscriber.period
-    shifted = period.shift(day - old_day)
+    shifted = subscriber.period.shift(day - old_day)
     subscriber.update!(billing_day: day, period: shifted)
     audit.tag(:billing_day_changed, "#{old_day}->#{day}")
     subscriber
@@ -220,7 +227,8 @@ class Subscriptions
   def warn_expiring_cards(subscribers, at: Time.now)
     expiring = expiring_cards(subscribers, at: at)
     expiring.each do |subscriber|
-      notify(subscriber, :card_expiring, on: subscriber.period.ends_at)
+      renews_at = subscriber.period.ends_at
+      notify(subscriber, :card_expiring, on: renews_at)
     end
     audit.gauge(:expiring_cards, expiring.size)
     expiring.size
