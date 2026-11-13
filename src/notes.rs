@@ -1,7 +1,7 @@
 /*
 Design notes for the fixture engine.
 The engine reads text and splits it into lines.
-Each line is trimmed before anything else happens.
+Each line is trimmed of surrounding whitespace first.
 Empty lines never reach the limit check.
 The limit counts kept lines, not input lines.
 Rendering happens after the limit is applied.
@@ -24,7 +24,7 @@ Notes like these are for maintainers.
 They change rarely and stay in prose.
 Nothing here is real; it stages review scenarios.
 Line wrapping in these notes is deliberate.
-Each sentence sits on its own line.
+Every sentence sits on a line of its own.
 That keeps diffs of this comment narrow.
 End of design notes.
 */

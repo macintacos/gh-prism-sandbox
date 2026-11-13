@@ -11,5 +11,5 @@ pub fn is_blank(text: &str) -> bool {
 }
 
 pub fn first_word(text: &str) -> &str {
-    text.split_whitespace().next().unwrap_or("")
+    text.split_whitespace().next().unwrap_or_default()
 }

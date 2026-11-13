@@ -17,4 +17,8 @@ impl Engine {
     pub fn limit(&self) -> usize {
         self.limit
     }
+
+    pub fn reset(&mut self, limit: usize) {
+        self.limit = limit;
+    }
 }

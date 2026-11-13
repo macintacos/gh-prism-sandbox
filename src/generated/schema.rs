@@ -2,9 +2,11 @@
 pub struct Schema {
     pub name: &'static str,
     pub version: u32,
+    pub strict: bool,
 }
 
 pub const SCHEMA: Schema = Schema {
     name: "prism",
-    version: 1,
+    version: 2,
+    strict: true,
 };
