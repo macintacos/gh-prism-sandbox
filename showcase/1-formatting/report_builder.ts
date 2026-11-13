@@ -24,7 +24,9 @@ function byPosted(a: Row, b: Row): number {
 
 /** Rows of one kind, oldest first. */
 function rowsOf(rows: readonly Row[], kind: string): Row[] {
-  return rows.filter((row) => row.kind === kind).sort(byPosted);
+  return rows
+    .filter((row) => row.kind === kind)
+    .sort(byPosted);
 }
 
 /** Sum of the amounts of `rows`, in minor units. */
@@ -51,7 +53,10 @@ export function buildOrderSection(
   const totals = totalOf(visible);
   const average = totals / visible.length;
   const largest = Math.max(...visible.map((row) => row.amount));
-  const summary = summarize({ totals, average, largest }, opts.locale);
+  const summary = summarize(
+    { totals, average, largest },
+    opts.locale
+  );
   const footer = formatFooter(opts.locale, visible.length);
 
   return {
@@ -74,7 +79,9 @@ export function buildRefundSection(
     return emptySection(title);
   }
 
-  const big = visible.filter(isBigRefund).map((row) => row.id);
+  const big = visible
+    .filter(isBigRefund)
+    .map((row) => row.id);
   const totals = totalOf(visible);
   const notes = big.length > 0 ? [`${big.length} flagged`] : [];
 
@@ -96,7 +103,9 @@ export function buildLateInvoiceSection(
 ): Section {
   const title = "Late invoices";
   const late = rowsOf(rows, "invoice").filter(
-    (row) => row.status !== "paid" && today - row.dueAt > GRACE * DAY
+    (row) =>
+      row.status !== "paid" &&
+      today - row.dueAt > GRACE * DAY
   );
   if (late.length === 0) {
     return emptySection(title);
@@ -133,10 +142,7 @@ export function buildPayoutSection(
     return emptySection(title);
   }
 
-  const payees = [...byPayee].map(([id, amount]) => ({
-    id,
-    amount
-  }));
+  const payees = [...byPayee].map(([id, amount]) => ({ id, amount }));
   payees.sort((a, b) => b.amount - a.amount);
   const totals = payees.reduce((sum, payee) => sum + payee.amount, 0);
   const columns = ["account", "amount"];
@@ -151,9 +157,9 @@ export function buildPayoutSection(
 }
 
 /** The share of `part` in `whole`, as a percentage with one decimal. */
-function percentOf(part:number, whole:number): string {
-  if (whole===0) return "0.0";
-  return ((part/whole)*100).toFixed(1);
+function percentOf(part: number, whole: number): string {
+  if (whole === 0) return "0.0";
+  return ((part / whole) * 100).toFixed(1);
 }
 
 /** Builds the Fees section: each fee type's total and its share. */
@@ -172,11 +178,7 @@ export function buildFeeSection(
   const lines: string[][] = [];
   for (const type of types) {
     const total = totalOf(fees.filter((row) => row.feeType === type));
-    lines.push([
-      type,
-      String(total),
-      percentOf(total, all)
-    ]);
+    lines.push([type, String(total), percentOf(total, all)]);
   }
 
   return {
@@ -203,7 +205,11 @@ export function buildDisputeSection(
   const won = disputes.filter((row) => row.status === "won");
   const lost = disputes.filter((row) => row.status === "lost");
   const summary = summarize(
-    { open: open.length, won: won.length, lost: lost.length },
+    {
+      open: open.length,
+      won: won.length,
+      lost: lost.length
+    },
     opts.locale
   );
 
@@ -230,8 +236,13 @@ export function buildCurrencySection(
 
   const codes = [...totals.keys()].sort();
   const all = totalOf(rows);
-  const columns = ["currency", "amount", "share",
-    "change", "previous"];
+  const columns = [
+    "currency",
+    "amount",
+    "share",
+    "change",
+    "previous"
+  ];
   const cells = codes.map((code) => {
     const amount = totals.get(code) ?? 0;
     const previous = opts.previous.get(code) ?? 0;
@@ -266,7 +277,10 @@ export function isHeadline(
   }
 
   const limit = opts.disputeLimit;
-  return (section.title === "Disputes" && section.rows.length > limit);
+  return (
+    section.title === "Disputes" &&
+    section.rows.length > limit
+  );
 }
 
 /** Builds every section of the report in print order. */
@@ -275,15 +289,15 @@ export function buildReport(
   opts: ReportOptions,
   today: number,
 ): Section[] {
-    const sections = [
-        buildOrderSection(rows, opts),
-        buildRefundSection(rows, opts),
-        buildLateInvoiceSection(rows, opts, today),
-        buildPayoutSection(rows, opts),
-        buildFeeSection(rows, opts),
-        buildDisputeSection(rows, opts),
-        buildCurrencySection(rows, opts),
-    ];
+  const sections = [
+    buildOrderSection(rows, opts),
+    buildRefundSection(rows, opts),
+    buildLateInvoiceSection(rows, opts, today),
+    buildPayoutSection(rows, opts),
+    buildFeeSection(rows, opts),
+    buildDisputeSection(rows, opts),
+    buildCurrencySection(rows, opts),
+  ];
   const headlines = sections.filter((s) => isHeadline(s, opts));
   const rest = sections.filter((s) => !isHeadline(s, opts));
   return [...headlines, ...rest];
