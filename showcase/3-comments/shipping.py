@@ -26,8 +26,8 @@ class Quote:
 
 
 # Billable weight is the larger of a parcel's actual weight and its
-# volumetric weight, so a light but bulky parcel pays for the space it
-# takes up in the van rather than for what it weighs.
+# volumetric weight, so a light but bulky parcel pays for the space
+# it takes up in the van rather than for what it weighs.
 def billable_weight(parcel):
     """The weight a carrier charges for, in kilograms."""
     volume = parcel.length * parcel.width * parcel.height
@@ -44,8 +44,8 @@ def can_ship(parcel):
     """Whether any carrier will take the parcel at all."""
     if parcel.weight <= 0:
         return False
-    # Carriers measure girth around the two shortest sides, and
-    # refuse anything over the limit whatever it weighs.
+    # Carriers measure girth around the two shorter sides, and
+    # reject anything over the limit whatever it weighs.
     if girth(parcel) > MAX_GIRTH:
         return False
     return parcel.weight <= MAX_WEIGHT
@@ -62,7 +62,7 @@ def base_rate(carrier, service, destination, weight):
     table = RATES[carrier][service][zone]
     # Tables list a price per weight band, lightest first. The first
     # band the weight fits under sets the price; a weight over every
-    # band uses the last band's price plus the per-kilogram excess.
+    # band uses the heaviest band's price plus the per-kilogram excess.
     for limit, price in table.bands:
         if weight <= limit:
             return price
@@ -79,7 +79,7 @@ def surcharges(carrier, parcel, destination):
     if girth(parcel) > MAX_GIRTH * Decimal("0.8"):
         total += fees.get("oversize", Decimal("0"))  # near max girth
     if destination.is_residential:
-        total += fees.get("residential", Decimal("0"))  # home delivery
+        total += fees.get("residential", Decimal("0"))  # house delivery
     return total
 
 
@@ -97,8 +97,9 @@ def quote(carrier, service, parcel, destination):
 # Quote every carrier and service, then keep the ones that can deliver
 # in time.
 #
-# A carrier that refuses the parcel is skipped rather than reported, so
-# the result may be empty even though every carrier was asked.
+# A carrier that refuses the parcel is skipped rather than reported,
+# so the result may be empty even though every carrier was asked, and
+# the caller must handle an empty list.
 def all_quotes(parcel, destination, *, within_days=None):
     """Every quote for a parcel, cheapest first."""
     quotes = []
@@ -132,9 +133,9 @@ def cart_parcel(cart):
     """Pack a cart into a single parcel, for quoting at checkout."""
     lines = cart.lines
     weight = sum(ln.item.weight * ln.quantity for ln in lines)
-    # Packing is approximate: every item goes in one box sized to
-    # the largest item, and the box grows in height with each item
-    # stacked on top. Real packing happens in the warehouse later.
+    # Packing is approximate: every item goes in one box sized to the
+    # largest item, and the box grows in height with each item stacked
+    # on top. Real packing happens in the warehouse later.
     length = max(ln.item.length for ln in lines)
     width = max(ln.item.width for ln in lines)
     height = sum(ln.item.height * ln.quantity for ln in lines)
@@ -161,8 +162,8 @@ def checkout_quote(cart, destination):
     if best is None:
         raise ValueError("no carrier can ship this cart")
     # Free shipping above the threshold is a store promise, not a
-    # carrier price, so it is applied here and never passed to the
-    # carrier quote.
+    # carrier price, so it is applied here and never sent to the carrier
+    # quote.
     return best.amount
 
 
@@ -176,8 +177,8 @@ def split_quotes(parcels, destination):
             raise ValueError("a parcel cannot be shipped")
         total += best.amount
         carriers.add(best.carrier)
-    # Each parcel picks its own cheapest carrier. Mixing carriers on one
-    # order is allowed, but the receipt lists each carrier once.
+    # Each parcel picks its own cheapest carrier. Mixing carriers on
+    # one order is allowed, though the receipt lists each carrier once.
     return round_cents(total), sorted(carriers)
 
 
@@ -187,8 +188,8 @@ def delivery_window(best, dispatched_on):
 
     earliest = dispatched_on + timedelta(days=best.days)
     # Allow two extra days at the far end: carriers miss their stated
-    # times often enough that promising the exact day sets customers
-    # up to be disappointed.
+    # times often enough that promising the exact day sets customers up
+    # to be disappointed.
     latest = earliest + timedelta(days=2)
     return earliest, latest
 
@@ -236,7 +237,7 @@ INSURANCE_MIN = Decimal("2.50")
 # cost, and is priced as a share of that value with a floor.
 #
 # Carriers cap what they will insure. Above the cap the parcel ships
-# uninsured for the excess, and the receipt says so.
+# with the excess uninsured, and the receipt says so plainly.
 def insurance_for(declared_value, carrier_cap):
     """The insurance premium for a parcel's declared value."""
     covered = min(declared_value, carrier_cap)

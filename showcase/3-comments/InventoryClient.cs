@@ -28,8 +28,9 @@ public sealed class InventoryClient
     }
 
     /// <summary>
-    /// Reserves stock for one order line. The reservation holds for the
-    /// configured window and is released automatically when it lapses.
+    /// Reserves stock for one order line. The reservation holds for
+    /// the configured hold window and is released automatically
+    /// when it lapses.
     /// </summary>
     public async Task<Reservation> ReserveAsync(
         string orderId, string sku, int quantity,
@@ -50,8 +51,9 @@ public sealed class InventoryClient
     /// </summary>
     /// <remarks>
     /// Lines are sent in batches of at most <see cref="MaxBatch"/>.
-    /// If any batch fails, the batches already reserved are released
-    /// before the error is rethrown, so a failed call holds nothing.
+    /// If any batch fails, the batches already reserved are
+    /// released before the error is rethrown, so a failed call
+    /// holds nothing.
     /// </remarks>
     public async Task<List<Reservation>> ReserveAllAsync(
         string orderId, IReadOnlyList<OrderLine> lines,
@@ -100,9 +102,9 @@ public sealed class InventoryClient
             }
             catch (StockApiException)
             {
-                // The reservation expires on its own when its window
-                // lapses, so a failed release only holds stock a little
-                // longer than it needs to.
+                // The reservation expires on its own when its
+                // window lapses, so a failed release only holds
+                // stock a little longer than it should.
             }
         }
     }
@@ -118,8 +120,9 @@ public sealed class InventoryClient
     }
 
     /// <summary>
-    /// Turns a reservation into a sale once payment succeeds. The stock
-    /// leaves the available count for good and the hold is closed.
+    /// Turns a reservation into a sale once payment succeeds. The
+    /// stock leaves the available count for good and the hold is
+    /// closed.
     /// </summary>
     public async Task CommitAsync(Reservation reservation,
         CancellationToken token)
@@ -149,8 +152,8 @@ public sealed class InventoryClient
     /// while a customer completes a bank's payment check.
     /// </summary>
     /// <returns>
-    /// The reservation with its new expiry, or the old one unchanged
-    /// if the service refused to extend it.
+    /// The reservation with its new expiry, or the old one
+    /// unchanged if the service declined to extend it.
     /// </returns>
     public async Task<Reservation> ExtendAsync(Reservation reservation,
         CancellationToken token)
@@ -172,7 +175,7 @@ public sealed class InventoryClient
             var levels = await api.LevelsAsync(batch, token);
             foreach (var level in levels)
             {
-                counts[level.Sku] = level.Free; // never below zero
+                counts[level.Sku] = level.Free; // never negative
             }
         }
         return counts;
@@ -180,8 +183,8 @@ public sealed class InventoryClient
 
     /*
      * Restock and the methods after it are used by the warehouse
-     * tools, not by checkout. They live here so both share one
-     * retry policy and one place to log calls to the service.
+     * tools, not by checkout. They live here so that both share
+     * one retry policy and one place to log calls to the service.
      */
 
     /// <summary>
@@ -212,9 +215,9 @@ public sealed class InventoryClient
     }
 
     /// <summary>
-    /// Moves stock between two warehouses. The move is recorded as a
+    /// Moves stock between two warehouses. The move is booked as a
     /// write-off at the source and a restock at the destination, so
-    /// each warehouse's history shows its side of the transfer.
+    /// each warehouse's history shows its half of the transfer.
     /// </summary>
     public async Task TransferAsync(string sku, int quantity,
         string from, string to, CancellationToken token)
@@ -226,8 +229,8 @@ public sealed class InventoryClient
     }
 
     /// <summary>
-    /// Lists reservations that lapsed without being committed or
-    /// released, oldest first, for the nightly reconciliation.
+    /// Lists reservations that lapsed without being committed
+    /// or released, oldest first, for the nightly stock count.
     /// </summary>
     public async Task<IReadOnlyList<Reservation>> LapsedAsync(
         DateTimeOffset since, CancellationToken token)
@@ -241,9 +244,9 @@ public sealed class InventoryClient
     /// </summary>
     public bool IsLive(Reservation reservation)
     {
-        // A reservation the service has already committed or released
-        // keeps its old expiry, so the state has to be checked as
-        // well as the time.
+        // A reservation the service has already committed or
+        // released keeps its old expiry, so the state has to be
+        // checked as well as the time.
         return reservation.ExpiresAt > clock.UtcNow
             && reservation.State == ReservationState.Held;
     }
