@@ -1,5 +1,5 @@
 # Ledger helpers for the fixture app.
-# Amounts are integers in cents.
+# Amounts are whole cents, never floats.
 
 RATE = 3
 
@@ -28,9 +28,11 @@ def upper(text):
 def total(amounts):
     """Sum amounts.
 
-    Negative amounts are refunds.
+    Negative amounts are refunds and lower the total.
     """
     result = 0
     for amount in amounts:
-        result += amount
+        # Skip zero amounts.
+        if amount:
+            result += amount  # refunds subtract
     return result
