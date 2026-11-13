@@ -11,7 +11,7 @@ impl Engine {
 
     pub fn run(&self, input: &str) -> Vec<String> {
         let items = parse(input);
-        items.into_iter().take(self.limit).collect()
+        items.into_iter().take(self.limit.max(1)).collect()
     }
 
     pub fn limit(&self) -> usize {
