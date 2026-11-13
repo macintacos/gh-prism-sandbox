@@ -31,8 +31,9 @@ class Notifications(
             return Delivery.skipped(user.id)
         }
         val channel = channels.preferred(user)
-        val body = templates.render("receipt", order.payload)
-        val subject = subjects.of("receipt", user.locale)
+        val locale = user.locale ?: defaultLocale
+        val body = templates.render("receipt", order.payload, locale)
+        val subject = subjects.of("receipt", locale)
 
         history.touch(user.id, "receipt")
         return channel.deliver(user, subject, body)
@@ -52,7 +53,9 @@ class Notifications(
         val body = templates.render("payment_failed", event.payload)
         val subject = subjects.of("payment_failed", user.locale)
         history.touch(user.id, "payment_failed")
-        return channel.deliver(user, subject, body)
+        val delivery = channel.deliver(user, subject, body)
+        history.recordAttempt(user.id, "payment_failed", delivery.ok)
+        return delivery
     }
 
     /** Tells a user their parcel has shipped, with tracking. */
@@ -60,7 +63,8 @@ class Notifications(
         if (!user.wants("shipping")) {
             return Delivery.skipped(user.id)
         }
-        val tracking = "${shipment.carrier} ${shipment.code}".trim()
+        val label = "${shipment.carrier} ${shipment.code}"
+        val tracking = label.trim()
         val payload = shipment.payload + ("tracking" to tracking)
         val body = templates.render("shipped", payload)
         val subject = subjects.of("shipped", user.locale)
@@ -74,9 +78,8 @@ class Notifications(
     fun inQuietHours(user: User, now: Instant): Boolean {
         val local = user.zone.rules.getOffset(now)
         val time = now.atOffset(local).toLocalTime()
-        val start = time.toSecondOfDay() >= QUIET_START.seconds
-        val end = time.toSecondOfDay() < QUIET_END.seconds
-        return start || end
+        val sec = time.toSecondOfDay()
+        return sec >= QUIET_START.seconds || sec < QUIET_END.seconds
     }
 
     /** Sends a delivery update, held until morning in quiet hours. */
@@ -94,7 +97,8 @@ class Notifications(
         }
 
         val body = templates.render("delivery", update.payload)
-        val channel = channels.preferred(user)
+        val subject = subjects.of("delivery", user.locale)
+        val channel = channels.preferred(user, allowSms = update.urgent)
         history.touch(user.id, "delivery")
         return channel.deliver(user, subject, body)
     }
@@ -118,7 +122,8 @@ class Notifications(
         }
         val last = history.lastSent(user.id, "digest")
         val now = clock.instant()
-        if (last != null && Duration.between(last, now) < DIGEST_GAP) {
+        val since = last?.let { Duration.between(it, now) }
+        if (since != null && since < DIGEST_GAP) {
             return Delivery.skipped(user.id)
         }
 
@@ -133,8 +138,7 @@ class Notifications(
     /** Sends a one-time sign-in link. */
     fun sendSignInLink(user: User, link: SignInLink): Delivery {
         val channel = channels.email(user)
-        val ttl = link.validFor
-        val payload = mapOf("link" to link.code, "ttl" to ttl)
+        val payload = mapOf("link" to link.code, "ttl" to link.validFor)
         val body = templates.render("sign_in", payload)
         val subject = subjects.of("sign_in", user.locale)
 
@@ -152,7 +156,8 @@ class Notifications(
             }
             val body = templates.render(notice.kind, notice.payload)
             val subject = subjects.of(notice.kind, user.locale)
-            out += channels.preferred(user).deliver(user, subject, body)
+            val channel = channels.preferred(user)
+            out += channel.deliver(user, subject, body)
         }
         history.touchAll(users.map { it.id }, notice.kind)
         return out
@@ -166,7 +171,9 @@ class Notifications(
         }
 
         val channel = channels.fallback(user, failed.channel)
-        return channel.resend(failed)
+        history.touch(user.id, failed.kind)
+        val resent = channel.resend(failed)
+        return resent
     }
 
     /** Confirms a refund and when the money should arrive. */
@@ -175,8 +182,9 @@ class Notifications(
             return Delivery.skipped(user.id)
         }
         val days = if (refund.toCard) 5 else 1
-        val payload = refund.payload + ("days" to days)
-        val body = templates.render("refund", payload)
+        val amount = refund.amount.format(user.locale ?: defaultLocale)
+        val extra = mapOf("days" to days, "amount" to amount)
+        val body = templates.render("refund", refund.payload + extra)
         val subject = subjects.of("refund", user.locale)
 
         val channel = channels.preferred(user)
