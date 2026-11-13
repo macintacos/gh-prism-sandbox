@@ -43,8 +43,11 @@ public final class OrderService {
         Money subtotal = order.subtotal();
         Region region = customer.region();
 
-        Money discount = rules.discountFor(subtotal, region,
-                customer.tier(), 2);
+        Money discount = rules.discountFor(
+                subtotal,
+                region,
+                customer.loyaltyTier(),
+                2);
         Money adjusted = subtotal.minus(discount);
         audit.record("priced", order.id(), adjusted);
         metrics.increment("orders.priced");
@@ -57,7 +60,8 @@ public final class OrderService {
         if (FREE_SHIPPING_REGIONS.contains(region)) {
             return Money.ZERO;
         }
-        if (order.weightGrams() > 20_000 || order.hasOversizeItem()) {
+        if (order.weightGrams() >= 20_000
+                || order.hasOversizeItem()) {
             return Money.of(2_500);
         }
         return Money.of(650);
@@ -89,8 +93,10 @@ public final class OrderService {
 
         Money total = priceOrder(order, customer);
         Money shipping = shippingFor(order, customer);
-        Confirmation done = Confirmation.builder().order(order.id())
-                .total(total.plus(shipping)).placedAt(clock.instant())
+        Confirmation done = Confirmation.builder()
+                .order(order.id())
+                .total(total.plus(shipping))
+                .confirmedAt(clock.instant())
                 .build();
         audit.record("confirmed", order.id(), done.total());
         metrics.increment("orders.confirmed");
@@ -103,8 +109,8 @@ public final class OrderService {
             return false;
         }
         Instant placed = order.placedAt();
-        return Duration.between(placed,
-                clock.instant()).compareTo(CANCEL_WINDOW) < 0;
+        return Duration.between(placed, clock.instant())
+                .compareTo(CANCEL_WINDOW) <= 0;
     }
 
     /** Cancels an order and returns the amount to refund. */
@@ -114,9 +120,7 @@ public final class OrderService {
         }
         order.markCancelled(reason);
         Money refund = order.paid();
-        audit.record("cancelled",
-                order.id(),
-                refund);
+        audit.record("cancelled", order.id(), refund, reason);
         metrics.increment("orders.cancelled");
         return refund;
     }
@@ -124,8 +128,8 @@ public final class OrderService {
     /** Loyalty points earned on an order: one per whole unit spent. */
     public long pointsFor(Money total, Customer customer) {
         long units = total.minorUnits() / 100;
-        long bonus = customer.isMember()?units/10:0;
-        return units+bonus;
+        long bonus = customer.isMember() ? units / 5 : 0;
+        return units + bonus;
     }
 
     /** Splits an order into one shipment per warehouse. */
@@ -140,8 +144,11 @@ public final class OrderService {
 
         var shipments = new ArrayList<Shipment>();
         for (var entry : byWarehouse.entrySet()) {
-            shipments.add(new Shipment(order.id(), entry.getKey(),
-                    entry.getValue()));
+            shipments.add(new Shipment(
+                    order.id(),
+                    entry.getKey(),
+                    entry.getValue(),
+                    order.deliverBy()));
         }
         metrics.gauge("orders.shipments", shipments.size());
         return shipments;
@@ -154,8 +161,9 @@ public final class OrderService {
         Money previous = order.total();
         Money updated = priceOrder(order, customer);
 
-        if (updated.compareTo(previous) != 0) { audit.record("repriced",
-                order.id(), updated); }
+        if (updated.compareTo(previous) != 0) {
+            audit.record("repriced", order.id(), updated, previous);
+        }
         order.setTotal(updated);
         return updated;
     }
@@ -164,8 +172,10 @@ public final class OrderService {
     public List<OrderStatus> nextStatuses(Order order) {
         switch (order.status()) {
             case DRAFT:
-                return List.of(CONFIRMED, CANCELLED,
-                        EXPIRED);
+                return List.of(
+                        CONFIRMED,
+                        CANCELLED,
+                        ABANDONED);
             case CONFIRMED:
                 return List.of(SHIPPED, CANCELLED);
             case SHIPPED:
@@ -194,8 +204,9 @@ public final class OrderService {
         }
         Money taxable = order.subtotal().minus(order.discount());
         long basisPoints = region.taxRateBasisPoints();
-        Money tax = taxable.times(basisPoints).divide(10_000,
-                Money.Rounding.HALF_UP);
+        Money tax = taxable
+                .times(basisPoints)
+                .divide(10_000, Money.Rounding.HALF_EVEN);
         metrics.increment("orders.taxed");
         return tax;
     }
@@ -212,8 +223,9 @@ public final class OrderService {
         }
 
         Money subtotal = order.subtotal();
-        order.addDiscount(coupon.amountFor(subtotal,
-                customer.tier()), code);
+        order.addDiscount(
+                coupon.amountFor(subtotal, customer.loyaltyTier()),
+                code);
         customer.markUsed(code);
         audit.record("coupon", order.id(), order.discount());
         return true;
